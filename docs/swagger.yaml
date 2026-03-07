@@ -1,0 +1,276 @@
+basePath: /
+definitions:
+  domain.Sub:
+    properties:
+      end_date:
+        type: string
+      id:
+        type: integer
+      price:
+        type: integer
+      service_name:
+        type: string
+      start_date:
+        type: string
+      user_id:
+        type: string
+    type: object
+  service.TotalAmountResponse:
+    properties:
+      sum:
+        type: integer
+    type: object
+  transport.CreateSubJSON:
+    properties:
+      end_date:
+        type: string
+      price:
+        type: integer
+      service_name:
+        type: string
+      start_date:
+        type: string
+      user_id:
+        type: string
+    type: object
+  transport.ErrorInfo:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  transport.ErrorResponse:
+    properties:
+      error:
+        $ref: '#/definitions/transport.ErrorInfo'
+    type: object
+  transport.UpdateSubJSON:
+    properties:
+      end_date:
+        type: string
+      price:
+        type: integer
+      service_name:
+        type: string
+      start_date:
+        type: string
+      user_id:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: reilbleem@rambler.ru
+  description: API для управления подписками
+  title: Subscription Service API
+  version: "1.0"
+paths:
+  /subs:
+    get:
+      description: Возвращает список всех подписок
+      parameters:
+      - description: Лимит объектов на страницу
+        example: "10"
+        in: query
+        name: limit
+        type: string
+      - description: Номер страницы
+        example: "2"
+        in: query
+        name: page
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/domain.Sub'
+            type: array
+        "500":
+          description: Внутренняя ошибка
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+      summary: Список подписок
+      tags:
+      - subscriptions
+    post:
+      consumes:
+      - application/json
+      description: Создаёт новую подписку для пользователя
+      parameters:
+      - description: Данные для создания подписки
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/transport.CreateSubJSON'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/domain.Sub'
+        "400":
+          description: Некорректный запрос
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+        "409":
+          description: Объект уже существует
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+      summary: Создать подписку
+      tags:
+      - subscriptions
+  /subs/{sub_id}:
+    delete:
+      description: Удаляет подписку по ID
+      parameters:
+      - description: ID подписки
+        in: path
+        name: sub_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: Успешно удалено
+        "404":
+          description: Подписка не найдена
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+      summary: Удалить подписку
+      tags:
+      - subscriptions
+    get:
+      description: Возвращает информацию об одной подписке
+      parameters:
+      - description: ID подписки
+        in: path
+        name: sub_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Sub'
+        "400":
+          description: Некорректный запрос
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+        "404":
+          description: Подписка не найдена
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+      summary: Получить подписку по ID
+      tags:
+      - subscriptions
+    patch:
+      consumes:
+      - application/json
+      description: Частичное обновление подписки
+      parameters:
+      - description: ID подписки
+        in: path
+        name: sub_id
+        required: true
+        type: integer
+      - description: Поля для обновления
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/transport.UpdateSubJSON'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Sub'
+        "400":
+          description: Некорректный запрос
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+        "404":
+          description: Подписка не найдена
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+      summary: Обновить подписку
+      tags:
+      - subscriptions
+  /subs/total:
+    get:
+      description: |-
+        Возвращает сумму стоимости подписок с возможной фильтрацией по пользователю, названию подписки и периоду.
+
+        Все параметры опциональные:
+        - userID: фильтр по ID пользователя
+        - subName: фильтр по названию
+        - from / to: временной диапазон
+      parameters:
+      - description: ID пользователя (строка или число)
+        example: 968a623d-a66d-4aec-8138-8850794fa28a
+        in: query
+        name: userID
+        type: string
+      - description: Название/тип подписки
+        example: '"yandex"'
+        in: query
+        name: subName
+        type: string
+      - description: Начало периода
+        example: "2025-01-01"
+        in: query
+        name: from
+        type: string
+      - description: Конец периода
+        example: "2025-12-31"
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Сумма и (возможно) другая статистика
+          schema:
+            $ref: '#/definitions/service.TotalAmountResponse'
+        "400":
+          description: Некорректный запрос
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/transport.ErrorResponse'
+      summary: Общая сумма подписок
+      tags:
+      - subscriptions
+schemes:
+- http
+- https
+swagger: "2.0"
