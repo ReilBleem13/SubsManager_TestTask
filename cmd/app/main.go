@@ -15,6 +15,7 @@ import (
 	"github.com/ReilBleem13/internal/config"
 	"github.com/ReilBleem13/internal/infra/database"
 	"github.com/ReilBleem13/internal/logger"
+	ratelimiting "github.com/ReilBleem13/internal/rateLimiting"
 	"github.com/ReilBleem13/internal/repository"
 	"github.com/ReilBleem13/internal/service"
 	"github.com/ReilBleem13/internal/transport"
@@ -63,7 +64,9 @@ func main() {
 
 	subHandler := transport.NewSubHandler(subSrv, logger)
 
-	httpMux := transport.NewRouter(subHandler)
+	rateLimiter := ratelimiting.NewIPRateLimiter()
+
+	httpMux := transport.NewRouter(rateLimiter, subHandler)
 	httpAddr := ":" + cfg.App.Port
 	httpServer := transport.NewServer(httpAddr, httpMux)
 

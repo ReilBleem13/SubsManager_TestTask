@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"github.com/ReilBleem13/internal/utils"
 )
 
 type ContextHandler struct {
@@ -16,6 +18,9 @@ func (h *ContextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *ContextHandler) Handle(ctx context.Context, r slog.Record) error {
+	if requestID := utils.RequestIDFromContext(ctx); requestID != "" {
+		r.AddAttrs(slog.String("request_id", requestID))
+	}
 	return h.inner.Handle(ctx, r)
 }
 

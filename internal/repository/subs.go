@@ -13,7 +13,7 @@ import (
 )
 
 type SubcRepo interface {
-	Create(ctx context.Context, req *domain.Sub) error
+	Create(ctx context.Context, req *SubCreate) (*domain.Sub, error)
 	Get(ctx context.Context, id int64) (*domain.Sub, error)
 	Update(ctx context.Context, req *SubUpdate) (*domain.Sub, error)
 	Delete(ctx context.Context, id int64) error
@@ -31,7 +31,9 @@ func NewSubsRepo(ctx context.Context, dbClient *sqlx.DB) SubcRepo {
 	}
 }
 
-func (s *subs) Create(ctx context.Context, req *domain.Sub) error {
+func (s *subs) Create(ctx context.Context, req *SubCreate) (*domain.Sub, error) {
+	var sub domain.Sub
+
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO subs (
 			service_name,
@@ -40,19 +42,36 @@ func (s *subs) Create(ctx context.Context, req *domain.Sub) error {
 			start_date,
 			end_date
 		) VALUES($1, $2, $3, $4, $5)
-		 RETURNING id
+		 RETURNING 
+		 	id, 
+			service_name, 
+			price, 
+			user_id, 
+			start_date, 
+			end_date,
+			created_at,
+			updated_at
 	`,
 		req.ServiceName, req.Price, req.UserID, req.StartDate, req.EndDate,
-	).Scan(&req.ID)
+	).Scan(
+		&sub.ID,
+		&sub.ServiceName,
+		&sub.Price,
+		&sub.UserID,
+		&sub.StartDate,
+		&sub.EndDate,
+		&sub.CreatedAt,
+		&sub.UpdatedAt,
+	)
 
 	if err != nil {
 		var pgErr *pq.Error
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return domain.ErrAlreadyExist().WithMessage("Sub already exists")
+			return nil, domain.ErrAlreadyExist().WithMessage("sub already exists")
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return &sub, nil
 }
 
 func (s *subs) Get(ctx context.Context, id int64) (*domain.Sub, error) {
@@ -65,12 +84,14 @@ func (s *subs) Get(ctx context.Context, id int64) (*domain.Sub, error) {
 			price,
 			user_id,
 			start_date,
-			end_date
+			end_date,
+			created_at,
+			updated_at
 		FROM subs
 		WHERE id = $1
 	`, id); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, domain.ErrNotFound().WithMessage("Sub not found")
+			return nil, domain.ErrNotFound().WithMessage("sub not found")
 		}
 		return nil, err
 	}
@@ -99,7 +120,7 @@ func (s *subs) Update(ctx context.Context, req *SubUpdate) (*domain.Sub, error) 
 	err = s.db.GetContext(ctx, &updatedSub, query, args...)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, domain.ErrNotFound().WithMessage("Sub not found")
+			return nil, domain.ErrNotFound().WithMessage("sub not found")
 		}
 		return nil, err
 	}
@@ -121,7 +142,7 @@ func (s *subs) Delete(ctx context.Context, id int64) error {
 	}
 
 	if rows == 0 {
-		return domain.ErrNotFound().WithMessage("Sub not found")
+		return domain.ErrNotFound().WithMessage("sub not found")
 	}
 	return nil
 }
@@ -140,6 +161,8 @@ func (s *subs) List(ctx context.Context, limit, offset int) ([]domain.Sub, int, 
 			user_id,
 			start_date,
 			end_date,
+			created_at,
+			updated_at,
 			COUNT(*) OVER() AS total_count
 		FROM subs
 		ORDER BY id 
@@ -167,15 +190,24 @@ func (s *subs) List(ctx context.Context, limit, offset int) ([]domain.Sub, int, 
 
 func (s *subs) TotalAmount(ctx context.Context, filter *SubFilter) (int, error) {
 	query := `
-		SELECT
-			COALESCE(SUM(price), 0)
+		SELECT COALESCE(SUM(price), 0)
 		FROM subs
+		CROSS JOIN LATERAL generate_series(
+			start_date,  
+			LEAST(end_date - interval '1 day', COALESCE($1, end_date)), 
+			'1 month'
+		) AS payment_date
+		WHERE payment_date >= COALESCE($2, start_date)  
 	`
 
-	conds, args := s.handleFilter(filter)
+	args := []interface{}{filter.To, filter.From}
 
-	if len(conds) > 0 {
-		query += " WHERE " + strings.Join(conds, " AND ")
+	if filter != nil {
+		conds, condArgs := s.handleFilter(filter, 2)
+		if len(conds) > 0 {
+			query += " AND " + strings.Join(conds, " AND ")
+			args = append(args, condArgs...)
+		}
 	}
 
 	var totalSum int
@@ -185,32 +217,22 @@ func (s *subs) TotalAmount(ctx context.Context, filter *SubFilter) (int, error) 
 	return totalSum, nil
 }
 
-func (s *subs) handleFilter(filter *SubFilter) ([]string, []interface{}) {
-	var (
-		conds []string
-		args  []interface{}
-	)
+func (s *subs) handleFilter(filter *SubFilter, offset int) ([]string, []interface{}) {
+	var conds []string
+	var args []interface{}
 
-	if filter != nil {
-		if filter.ServiceName != "" {
-			conds = append(conds, fmt.Sprintf("service_name = $%d", len(args)+1))
-			args = append(args, filter.ServiceName)
-		}
+	if filter == nil {
+		return conds, args
+	}
 
-		if filter.UserID != nil {
-			conds = append(conds, fmt.Sprintf("user_id = $%d", len(args)+1))
-			args = append(args, filter.UserID)
-		}
+	if filter.ServiceName != "" {
+		conds = append(conds, fmt.Sprintf("service_name = $%d", offset+len(args)+1))
+		args = append(args, filter.ServiceName)
+	}
 
-		if filter.From != nil {
-			conds = append(conds, fmt.Sprintf("start_date >= $%d", len(args)+1))
-			args = append(args, filter.From)
-		}
-
-		if filter.To != nil {
-			conds = append(conds, fmt.Sprintf("start_date <= $%d", len(args)+1))
-			args = append(args, filter.To)
-		}
+	if filter.UserID != nil {
+		conds = append(conds, fmt.Sprintf("user_id = $%d", offset+len(args)+1))
+		args = append(args, filter.UserID)
 	}
 	return conds, args
 }

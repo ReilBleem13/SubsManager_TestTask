@@ -5,6 +5,7 @@
 # Описание
 - CRUDL для подписки
 - Отдельная ручка для посчета суммарной стоимости подписок с фильтром.
+- Rate Limiter реализован через Token Bucket (по дефолту стоит 10 токенов, восстановление по 1-ому за 20сек)
 
 ## Технологии
 - **Go 1.26.1**
@@ -15,20 +16,8 @@
 
 ### Запуск через Docker Compose
 
-1. Создайте .env в корне проекта со следующим содержимым (настройте под себя):
-    ```env
-    APP_PORT=8080
-    APP_LOG_LEVEL=debug
-
-    DATABASE_HOST=db
-    DATABASE_PORT=5432
-    DATABASE_USER=colorvax
-    DATABASE_PASSWORD=colorvax
-    DATABASE_DBNAME=colorvax
-    DATABASE_SSLMODE=disable
-
-2. Запустите сервис `make docker-up` или `docker-compose up -d --build`
-3. Остановка сервиса `make docker-down` или `docker-compose down -v`
+1. Запустите сервис `make docker-up` или `docker-compose up -d --build`
+2. Остановка сервиса `make docker-down` или `docker-compose down -v`
 
 ## Миграции 
 
@@ -46,9 +35,11 @@
 │   ├── config/         # Конфигурация
 │   ├── domain/         # Доменные модели
 │   ├── transport/      # HTTP handlers
+│   ├── rateLimiting/   # Rate Limiter
 │   ├── repository/     # Репозиторий
 │   ├── service/        # Бизнес-логика
 │   ├── logger/         # Инициализация логгера
+│   ├── utils/          # Вспомогательные функции
 │   └── infra/          # Инфраструктура (клиент БД)
 ├── migrations/         # Миграции базы данных
 ├── docker-compose.yaml

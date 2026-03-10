@@ -6,13 +6,13 @@ import (
 	"github.com/google/uuid"
 )
 
-func mapCreateSubToDomain(req *CreateSubRequest) *domain.Sub {
-	return &domain.Sub{
+func mapCreateSubToDomain(req *CreateSubRequest) *repository.SubCreate {
+	return &repository.SubCreate{
 		ServiceName: req.ServiceName,
 		Price:       req.Price,
 		UserID:      req.UserID,
 		StartDate:   req.StartDate,
-		EndDate:     req.EndData,
+		EndDate:     *req.EndDate,
 	}
 }
 

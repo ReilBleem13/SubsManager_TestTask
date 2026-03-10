@@ -10,7 +10,7 @@ type CreateSubRequest struct {
 	Price       int
 	UserID      uuid.UUID
 	StartDate   domain.Date
-	EndData     *domain.Date
+	EndDate     *domain.Date
 }
 
 type UpdateSubRequest struct {

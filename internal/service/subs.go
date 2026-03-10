@@ -35,18 +35,20 @@ func NewSub(repo repository.SubcRepo, logger *slog.Logger) SubService {
 }
 
 func (s *sub) Create(ctx context.Context, req *CreateSubRequest) (*domain.Sub, error) {
-	s.logger.DebugContext(ctx, "Start srv.sub.Create")
+	s.logger.DebugContext(ctx, "Start srv.sub.Create", "request", req)
 
-	req.ServiceName = strings.ToLower(req.ServiceName)
+	if err := s.validateCreate(ctx, req); err != nil {
+		return nil, err
+	}
 
-	createdSub := mapCreateSubToDomain(req)
+	mappedReq := mapCreateSubToDomain(req)
 
-	if err := s.repo.Create(ctx, createdSub); err != nil {
+	createdSub, err := s.repo.Create(ctx, mappedReq)
+	if err != nil {
 		if repoErr, ok := errors.AsType[*domain.AppError](err); ok {
 			s.logger.WarnContext(ctx, repoErr.Message)
 		} else {
 			s.logger.ErrorContext(ctx, "Failed srv.sub.Create",
-				"request", req,
 				"error", err,
 			)
 		}
@@ -57,13 +59,40 @@ func (s *sub) Create(ctx context.Context, req *CreateSubRequest) (*domain.Sub, e
 	return createdSub, nil
 }
 
+func (s *sub) validateCreate(ctx context.Context, req *CreateSubRequest) error {
+	if req.ServiceName == "" {
+		err := domain.ErrBadRequest().WithMessage("empty service name")
+		s.logger.WarnContext(ctx, "Invalid request", "error", err)
+		return err
+	}
+	req.ServiceName = strings.ToLower(req.ServiceName)
+
+	if req.Price < 0 {
+		err := domain.ErrBadRequest().WithMessage("price less than 0")
+		s.logger.WarnContext(ctx, "Invalid request", "error", err)
+		return err
+	}
+
+	if req.EndDate == nil {
+		d := req.StartDate.AddMonths(1)
+		req.EndDate = &d
+	}
+
+	if req.EndDate.Before(req.StartDate) {
+		err := domain.ErrBadRequest().WithMessage("end date before start date")
+		s.logger.WarnContext(ctx, "Invalid request", "error", err)
+		return err
+	}
+	return nil
+}
+
 func (s *sub) Get(ctx context.Context, rawSubID string) (*domain.Sub, error) {
 	s.logger.DebugContext(ctx, "Start srv.sub.Get", "sub_id", rawSubID)
 
 	subID, err := strconv.Atoi(rawSubID)
 	if err != nil {
 		s.logger.WarnContext(ctx, "Invalid subID")
-		return nil, domain.ErrBadRequest()
+		return nil, domain.ErrBadRequest().WithMessage("invalid sub id")
 	}
 
 	sub, err := s.repo.Get(ctx, int64(subID))
@@ -86,7 +115,11 @@ func (s *sub) Update(ctx context.Context, rawSubID string, req *UpdateSubRequest
 	subID, err := strconv.Atoi(rawSubID)
 	if err != nil {
 		s.logger.WarnContext(ctx, "Invalid subID")
-		return nil, domain.ErrBadRequest()
+		return nil, domain.ErrBadRequest().WithMessage("invalid sub id")
+	}
+
+	if err := s.validateUpdate(ctx, int64(subID), req); err != nil {
+		return nil, err
 	}
 
 	updatedSub, err := s.repo.Update(ctx, mapUpdateSubRequestToRepo(int64(subID), req))
@@ -106,13 +139,66 @@ func (s *sub) Update(ctx context.Context, rawSubID string, req *UpdateSubRequest
 	return updatedSub, nil
 }
 
+func (s *sub) validateUpdate(ctx context.Context, subID int64, req *UpdateSubRequest) error {
+	oldSub, err := s.repo.Get(ctx, subID)
+	if err != nil {
+		if repoErr, ok := errors.AsType[*domain.AppError](err); ok {
+			s.logger.WarnContext(ctx, repoErr.Message)
+		} else {
+			s.logger.ErrorContext(ctx, "Failed srv.sub.Get",
+				"error", err,
+			)
+		}
+		return err
+	}
+
+	if req.ServiceName != nil {
+		if *req.ServiceName == "" {
+			err := domain.ErrBadRequest().WithMessage("empty service name")
+			s.logger.WarnContext(ctx, "Invalid request", "error", err)
+			return err
+		}
+
+		*req.ServiceName = strings.ToLower(*req.ServiceName)
+	}
+
+	if req.Price != nil && *req.Price < 0 {
+		err := domain.ErrBadRequest().WithMessage("price less than 0")
+		s.logger.WarnContext(ctx, "Invalid request", "error", err)
+		return err
+	}
+
+	if req.StartDate != nil && req.EndDate != nil {
+		if req.EndDate.Before(*req.StartDate) {
+			err := domain.ErrBadRequest().WithMessage("end date before start date")
+			s.logger.WarnContext(ctx, "Invalid request", "error", err)
+			return err
+		}
+	} else if req.StartDate != nil {
+		endDate := oldSub.EndDate
+		if endDate.Before(*req.StartDate) {
+			err := domain.ErrBadRequest().WithMessage("new start date after existing end date")
+			s.logger.WarnContext(ctx, "Invalid request", "error", err)
+			return err
+		}
+	} else if req.EndDate != nil {
+		startDate := oldSub.StartDate
+		if (*req.EndDate).Before(startDate) {
+			err := domain.ErrBadRequest().WithMessage("new end date before existing start date")
+			s.logger.WarnContext(ctx, "Invalid request", "error", err)
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *sub) Delete(ctx context.Context, rawSubID string) error {
 	s.logger.DebugContext(ctx, "Start srv.sub.Delete", "sub_id", rawSubID)
 
 	subID, err := strconv.Atoi(rawSubID)
 	if err != nil {
 		s.logger.WarnContext(ctx, "Invalid subID")
-		return domain.ErrBadRequest()
+		return domain.ErrBadRequest().WithMessage("invalid sub id")
 	}
 
 	if err := s.repo.Delete(ctx, int64(subID)); err != nil {
@@ -167,28 +253,12 @@ func (s *sub) TotalAmount(ctx context.Context, req *TotalAmountRequest) (*TotalA
 		"req", req,
 	)
 
-	var userID *uuid.UUID
-	if req.RawUserID != "" {
-		id, err := uuid.Parse(req.RawUserID)
-		if err != nil {
-			return nil, domain.ErrBadRequest().WithMessage("Invalid userID")
-		}
-		userID = &id
-	}
-
-	from, err := utils.ParseDate(req.RawFrom)
+	filter, err := s.validateTotalAmount(ctx, req)
 	if err != nil {
-		return nil, domain.ErrBadRequest().WithMessage("Invalid fromDate")
+		return nil, err
 	}
 
-	to, err := utils.ParseDate(req.RawTo)
-	if err != nil {
-		return nil, domain.ErrBadRequest().WithMessage("Invalid endDate")
-	}
-
-	subName := strings.ToLower(req.RawSubname)
-
-	totalSum, err := s.repo.TotalAmount(ctx, mapFilterToRepo(userID, subName, from, to))
+	totalSum, err := s.repo.TotalAmount(ctx, filter)
 	if err != nil {
 		if repoErr, ok := errors.AsType[*domain.AppError](err); ok {
 			s.logger.WarnContext(ctx, repoErr.Message)
@@ -200,4 +270,34 @@ func (s *sub) TotalAmount(ctx context.Context, req *TotalAmountRequest) (*TotalA
 
 	s.logger.InfoContext(ctx, "Total amount successfully got", "total_amount", totalSum)
 	return &TotalAmountResponse{Sum: totalSum}, nil
+}
+
+func (s *sub) validateTotalAmount(ctx context.Context, req *TotalAmountRequest) (*repository.SubFilter, error) {
+	var userID *uuid.UUID
+	if req.RawUserID != "" {
+		id, err := uuid.Parse(req.RawUserID)
+		if err != nil {
+			s.logger.WarnContext(ctx, "Invalid request", "error", err)
+			return nil, domain.ErrBadRequest().WithMessage("invalid userID")
+		}
+		userID = &id
+	}
+
+	from, err := utils.ParseDate(req.RawFrom)
+	if err != nil {
+		s.logger.WarnContext(ctx, "Invalid request", "error", err)
+		return nil, domain.ErrBadRequest().WithMessage("invalid from date")
+	}
+
+	to, err := utils.ParseDate(req.RawTo)
+	if err != nil {
+		s.logger.WarnContext(ctx, "Invalid request", "error", err)
+		return nil, domain.ErrBadRequest().WithMessage("invalid to Date")
+	}
+
+	var subName string
+	if req.RawSubname != "" {
+		subName = strings.ToLower(req.RawSubname)
+	}
+	return mapFilterToRepo(userID, subName, from, to), nil
 }

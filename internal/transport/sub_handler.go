@@ -6,7 +6,9 @@ import (
 	"net/http"
 
 	"github.com/ReilBleem13/internal/domain"
+	ratelimiting "github.com/ReilBleem13/internal/rateLimiting"
 	"github.com/ReilBleem13/internal/service"
+	"github.com/gorilla/mux"
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
@@ -22,20 +24,38 @@ func NewSubHandler(srv service.SubService, logger *slog.Logger) *SubHandler {
 	}
 }
 
-func (h *SubHandler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /subs", h.handleCreate)
-	mux.HandleFunc("GET /subs", h.handleList)
-	mux.HandleFunc("GET /subs/total", h.handleTotalAmount)
-	mux.HandleFunc("GET /subs/{sub_id}", h.handleGet)
-	mux.HandleFunc("PATCH /subs/{sub_id}", h.handleUpdate)
-	mux.HandleFunc("DELETE /subs/{sub_id}", h.handleDelete)
+func (h *SubHandler) Register(mux *mux.Router, ipRateLimiter *ratelimiting.IPRateLimiter) {
+	wrapDefaultMiddlewares := func(hf http.HandlerFunc) http.Handler {
+		return conveyor(
+			hf,
+			requestIDMiddleware,
+			loggingMiddleware(h.logger),
+			rateLimitMiddleware(ipRateLimiter),
+		)
+	}
 
-	mux.HandleFunc("GET /swagger/", httpSwagger.Handler(
+	mux.Handle("/subs", wrapDefaultMiddlewares(h.handleCreate)).Methods(http.MethodPost)
+	mux.Handle("/subs", wrapDefaultMiddlewares(h.handleList)).Methods(http.MethodGet)
+	mux.Handle("/subs/total", wrapDefaultMiddlewares(h.handleTotalAmount)).Methods(http.MethodGet)
+	mux.Handle("/subs/{sub_id}", wrapDefaultMiddlewares(h.handleGet)).Methods(http.MethodGet)
+	mux.Handle("/subs/{sub_id}", wrapDefaultMiddlewares(h.handleUpdate)).Methods(http.MethodPatch)
+	mux.Handle("/subs/{sub_id}", wrapDefaultMiddlewares(h.handleDelete)).Methods(http.MethodDelete)
+
+	mux.HandleFunc("/health", h.handleHealth).Methods(http.MethodGet)
+
+	mux.HandleFunc("/swagger/", httpSwagger.Handler(
 		httpSwagger.URL("/swagger/doc.json"),
-	))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-	})
+	)).Methods(http.MethodGet)
+}
+
+// handleHealth godoc
+// @Summary      Проверка доступности сервера
+// @Description  Проверяет сервер на доступность
+// @Tags         health
+// @Success      200
+// @Router       /health [get]
+func (h *SubHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(200)
 }
 
 // handleCreate godoc
@@ -81,7 +101,7 @@ func (h *SubHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 // @Failure      500  {object}  ErrorResponse "Внутренняя ошибка"
 // @Router       /subs/{sub_id} [get]
 func (h *SubHandler) handleGet(w http.ResponseWriter, r *http.Request) {
-	rawSubID := r.PathValue("sub_id")
+	rawSubID := mux.Vars(r)["sub_id"]
 
 	sub, err := h.srv.Get(r.Context(), rawSubID)
 	if err != nil {
@@ -115,7 +135,7 @@ func (h *SubHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawSubID := r.PathValue("sub_id")
+	rawSubID := mux.Vars(r)["sub_id"]
 
 	sub, err := h.srv.Update(r.Context(), rawSubID, mapUpdateSubJSONToService(&in))
 	if err != nil {
@@ -139,7 +159,7 @@ func (h *SubHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 // @Failure      500  {object}  ErrorResponse "Внутренняя ошибка"
 // @Router       /subs/{sub_id} [delete]
 func (h *SubHandler) handleDelete(w http.ResponseWriter, r *http.Request) {
-	rawSubID := r.PathValue("sub_id")
+	rawSubID := mux.Vars(r)["sub_id"]
 
 	if err := h.srv.Delete(r.Context(), rawSubID); err != nil {
 		handleError(w, err)

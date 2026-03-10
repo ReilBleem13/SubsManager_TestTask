@@ -8,7 +8,7 @@ func mapCreateSubJSONToService(in *CreateSubJSON) *service.CreateSubRequest {
 		Price:       in.Price,
 		UserID:      in.UserID,
 		StartDate:   in.StartDate,
-		EndData:     in.EndData,
+		EndDate:     in.EndData,
 	}
 }
 

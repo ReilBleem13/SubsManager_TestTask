@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"log"
 	"log/slog"
 	"os"
@@ -120,9 +119,8 @@ func newDate(t time.Time) domain.Date {
 	return domain.Date(time.Date(y, m, d, 0, 0, 0, 0, time.UTC))
 }
 
-func TestSubService_Create(t *testing.T) {
+func TestSubServce_Create(t *testing.T) {
 	ctx := context.Background()
-	testContainers.Reset(t, ctx)
 
 	repo := repository.NewSubsRepo(ctx, DB())
 	logger := slog.Default()
@@ -130,76 +128,124 @@ func TestSubService_Create(t *testing.T) {
 
 	userID := uuid.New()
 	startDate := newDate(time.Now())
-	req := &CreateSubRequest{
-		ServiceName: "YANDEX",
-		Price:       400,
-		UserID:      userID,
-		StartDate:   startDate,
-		EndData:     nil,
+	endDate := startDate.AddMonths(1)
+
+	tests := []struct {
+		name         string
+		prepare      func()
+		req          *CreateSubRequest
+		wantErr      bool
+		wantErrCode  string
+		validateFunc func(t *testing.T, req *CreateSubRequest, sub *domain.Sub)
+	}{
+		{
+			name: "Success. Created",
+			req: &CreateSubRequest{
+				ServiceName: "YANDEX",
+				Price:       400,
+				UserID:      userID,
+				StartDate:   newDate(time.Now()),
+				EndDate:     nil,
+			},
+			validateFunc: func(t *testing.T, req *CreateSubRequest, sub *domain.Sub) {
+				require.Equal(t, int64(1), sub.ID)
+				require.Equal(t, req.UserID, sub.UserID)
+				require.Equal(t, req.ServiceName, sub.ServiceName)
+				require.Equal(t, req.Price, sub.Price)
+				require.Equal(t, req.StartDate, sub.StartDate)
+				require.Equal(t, req.StartDate.AddMonths(1), sub.EndDate)
+				require.NotEmpty(t, sub.CreatedAt)
+				require.NotEmpty(t, sub.UpdatedAt)
+
+				require.Equal(t, 1, countSubs(t))
+			},
+		},
+		{
+			name: "Error. Already exist",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			req: &CreateSubRequest{
+				ServiceName: "YANDEX",
+				Price:       400,
+				UserID:      userID,
+				StartDate:   startDate,
+				EndDate:     &endDate,
+			},
+			wantErr:     true,
+			wantErrCode: "sub already exists",
+		},
+		{
+			name: "Error. Empty service name",
+			req: &CreateSubRequest{
+				ServiceName: "",
+				Price:       400,
+				UserID:      userID,
+				StartDate:   startDate,
+				EndDate:     &endDate,
+			},
+			wantErr:     true,
+			wantErrCode: "empty service name",
+		},
+		{
+			name: "Error. Price less than 0",
+			req: &CreateSubRequest{
+				ServiceName: "yandex",
+				Price:       -1,
+				UserID:      userID,
+				StartDate:   startDate,
+				EndDate:     &endDate,
+			},
+			wantErr:     true,
+			wantErrCode: "price less than 0",
+		},
+		{
+			name: "Error. End date before start date",
+			req: &CreateSubRequest{
+				ServiceName: "yandex",
+				Price:       400,
+				UserID:      userID,
+				StartDate:   endDate,
+				EndDate:     &startDate,
+			},
+			wantErr:     true,
+			wantErrCode: "end date before start date",
+		},
 	}
 
-	createdSub, err := service.Create(ctx, req)
-	require.NoError(t, err)
-	require.NotNil(t, createdSub)
-	require.Greater(t, createdSub.ID, int64(0))
+	for _, test := range tests {
+		testContainers.Reset(t, ctx)
+		t.Run(test.name, func(t *testing.T) {
+			if test.prepare != nil {
+				test.prepare()
+			}
 
-	require.Equal(t, "YANDEX", createdSub.ServiceName)
-	require.Equal(t, 400, createdSub.Price)
-	require.Equal(t, userID, createdSub.UserID)
-	require.Equal(t, startDate, createdSub.StartDate)
-	require.Nil(t, createdSub.EndDate)
+			createdSub, err := service.Create(ctx, test.req)
+			if test.wantErr {
+				require.Error(t, err)
+				require.Nil(t, createdSub)
+				if test.wantErrCode != "" {
+					require.Contains(t, err.Error(), test.wantErrCode)
+				}
+				return
+			}
 
-	var count int
-	require.NoError(t, DB().GetContext(ctx, &count, `SELECT COUNT(*) FROM subs`))
-	require.Equal(t, 1, count)
-
-	var savedSub domain.Sub
-	require.NoError(t, DB().GetContext(ctx, &savedSub, `SELECT * FROM subs WHERE id = $1`, createdSub.ID))
-	require.Equal(t, createdSub.ID, savedSub.ID)
-	require.Equal(t, "YANDEX", savedSub.ServiceName)
-	require.Equal(t, 400, savedSub.Price)
-	require.Equal(t, userID, savedSub.UserID)
-	require.Equal(t, startDate, savedSub.StartDate)
-}
-
-func TestSubService_Create_AlreadyExists(t *testing.T) {
-	ctx := context.Background()
-	testContainers.Reset(t, ctx)
-
-	repo := repository.NewSubsRepo(ctx, DB())
-	logger := slog.Default()
-	service := NewSub(repo, logger)
-
-	userID := uuid.New()
-	startDate := newDate(time.Now())
-	req := &CreateSubRequest{
-		ServiceName: "YANDEX",
-		Price:       400,
-		UserID:      userID,
-		StartDate:   startDate,
-		EndData:     nil,
+			require.NoError(t, err)
+			if test.validateFunc != nil {
+				test.validateFunc(t, test.req, createdSub)
+			}
+		})
 	}
-
-	_, err := service.Create(ctx, req)
-	require.NoError(t, err)
-
-	req2 := &CreateSubRequest{
-		ServiceName: "YANDEX",
-		Price:       400,
-		UserID:      userID,
-		StartDate:   startDate,
-		EndData:     nil,
-	}
-	_, err = service.Create(ctx, req2)
-
-	repoErr, ok := errors.AsType[*domain.AppError](err)
-	require.True(t, ok)
-	require.Equal(t, repoErr.Code, domain.ErrAlreadyExist().Code)
 }
 
 func TestSubService_Get(t *testing.T) {
 	ctx := context.Background()
-	testContainers.Reset(t, ctx)
 
 	repo := repository.NewSubsRepo(ctx, DB())
 	logger := slog.Default()
@@ -207,50 +253,81 @@ func TestSubService_Get(t *testing.T) {
 
 	userID := uuid.New()
 	startDate := newDate(time.Now())
-	req := &CreateSubRequest{
-		ServiceName: "YANDEX",
-		Price:       400,
-		UserID:      userID,
-		StartDate:   startDate,
+	endDate := startDate.AddMonths(1)
+
+	tests := []struct {
+		name        string
+		rawSubID    string
+		prepare     func()
+		wantErr     bool
+		wantErrCode string
+		validate    func(got *domain.Sub)
+	}{
+		{
+			name:     "Success. Got",
+			rawSubID: "1",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			validate: func(got *domain.Sub) {
+				require.Equal(t, int64(1), got.ID)
+				require.Equal(t, userID, got.UserID)
+				require.Equal(t, 400, got.Price)
+				require.Equal(t, "yandex", got.ServiceName)
+				require.Equal(t, startDate, got.StartDate)
+				require.Equal(t, endDate, got.EndDate)
+				require.NotEmpty(t, got.CreatedAt)
+				require.NotEmpty(t, got.UpdatedAt)
+			},
+		},
+		{
+			name:        "Error. Not found",
+			rawSubID:    "1",
+			wantErr:     true,
+			wantErrCode: "sub not found",
+		},
+		{
+			name:        "Error. Invalid SubID",
+			rawSubID:    "-",
+			wantErr:     true,
+			wantErrCode: "invalid sub id",
+		},
 	}
 
-	_, err := DB().ExecContext(t.Context(), `
-		INSERT INTO subs (
-			service_name,
-			price,
-			user_id,
-			start_date
-		) VALUES ($1, $2, $3, $4)	 
-	`, req.ServiceName, req.Price, req.UserID, req.StartDate)
-	require.NoError(t, err)
+	for _, test := range tests {
+		testContainers.Reset(t, ctx)
+		t.Run(test.name, func(t *testing.T) {
+			if test.prepare != nil {
+				test.prepare()
+			}
 
-	gotSub, err := service.Get(t.Context(), "1")
-	require.NoError(t, err)
+			got, err := service.Get(ctx, test.rawSubID)
 
-	require.Equal(t, gotSub.ID, int64(1))
-	require.Equal(t, gotSub.ServiceName, req.ServiceName)
-	require.Equal(t, gotSub.UserID, req.UserID)
-	require.Equal(t, gotSub.Price, req.Price)
-	require.Equal(t, gotSub.StartDate, req.StartDate)
-}
+			if test.wantErr {
+				require.Error(t, err)
+				require.Nil(t, got)
+				if test.wantErrCode != "" {
+					require.Contains(t, err.Error(), test.wantErrCode)
+				}
+				return
+			}
 
-func TestSubService_Get_NotFound(t *testing.T) {
-	ctx := context.Background()
-	testContainers.Reset(t, ctx)
-
-	repo := repository.NewSubsRepo(ctx, DB())
-	logger := slog.Default()
-	service := NewSub(repo, logger)
-
-	_, err := service.Get(t.Context(), "1")
-	repoErr, ok := errors.AsType[*domain.AppError](err)
-	require.True(t, ok)
-	require.Equal(t, repoErr.Code, domain.ErrNotFound().Code)
+			require.NoError(t, err)
+			if test.validate != nil {
+				test.validate(got)
+			}
+		})
+	}
 }
 
 func TestSubService_Update(t *testing.T) {
 	ctx := context.Background()
-	testContainers.Reset(t, ctx)
 
 	repo := repository.NewSubsRepo(ctx, DB())
 	logger := slog.Default()
@@ -258,98 +335,267 @@ func TestSubService_Update(t *testing.T) {
 
 	userID := uuid.New()
 	startDate := newDate(time.Now())
-	req := &CreateSubRequest{
-		ServiceName: "YANDEX",
-		Price:       400,
-		UserID:      userID,
-		StartDate:   startDate,
+	endDate := startDate.AddMonths(1)
+
+	tests := []struct {
+		name            string
+		prepare         func()
+		reqRawSubID     string
+		reqUpdateSubReq *UpdateSubRequest
+		wantErr         bool
+		wantErrCode     string
+		validate        func(got *domain.Sub)
+	}{
+		{
+			name: "Success. Updated",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			reqRawSubID: "1",
+			reqUpdateSubReq: &UpdateSubRequest{
+				ServiceName: new("yandex-updated"),
+			},
+			validate: func(got *domain.Sub) {
+				require.Equal(t, "yandex-updated", got.ServiceName)
+				require.Equal(t, userID, got.UserID)
+				require.Equal(t, 400, got.Price)
+				require.Equal(t, startDate, got.StartDate)
+				require.Equal(t, endDate, got.EndDate)
+				require.NotEmpty(t, got.CreatedAt)
+				require.NotEmpty(t, got.UpdatedAt)
+			},
+		},
+		{
+			name: "Success. Updated",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			reqRawSubID: "1",
+			reqUpdateSubReq: &UpdateSubRequest{
+				ServiceName: new("yandex-updated"),
+				Price:       new(800),
+			},
+			validate: func(got *domain.Sub) {
+				require.Equal(t, "yandex-updated", got.ServiceName)
+				require.Equal(t, userID, got.UserID)
+				require.Equal(t, 800, got.Price)
+				require.Equal(t, startDate, got.StartDate)
+				require.Equal(t, endDate, got.EndDate)
+				require.NotEmpty(t, got.CreatedAt)
+				require.NotEmpty(t, got.UpdatedAt)
+			},
+		},
+		{
+			name:        "Error. Not found",
+			reqRawSubID: "1",
+			wantErr:     true,
+			wantErrCode: "sub not found",
+		},
+		{
+			name:        "Error. Invalid subID",
+			reqRawSubID: "-",
+			wantErr:     true,
+			wantErrCode: "invalid sub id",
+		},
+		{
+			name: "Error. Empty service name",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			reqRawSubID: "1",
+			reqUpdateSubReq: &UpdateSubRequest{
+				ServiceName: new(string),
+			},
+			wantErr:     true,
+			wantErrCode: "empty service name",
+		},
+		{
+			name: "Error. Price less than 0",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			reqRawSubID: "1",
+			reqUpdateSubReq: &UpdateSubRequest{
+				Price: new(-1),
+			},
+			wantErr:     true,
+			wantErrCode: "price less than 0",
+		},
+		{
+			name: "Error. End Date before start date",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			reqRawSubID: "1",
+			reqUpdateSubReq: &UpdateSubRequest{
+				StartDate: &endDate,
+				EndDate:   &startDate,
+			},
+			wantErr:     true,
+			wantErrCode: "end date before start date",
+		},
+		{
+			name: "Error. New start date after existing end date",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			reqRawSubID: "1",
+			reqUpdateSubReq: &UpdateSubRequest{
+				StartDate: &[]domain.Date{newDate(time.Time(endDate).Add(24 * time.Hour))}[0],
+			},
+			wantErr:     true,
+			wantErrCode: "new start date after existing end date",
+		},
+		{
+			name: "Error. New end date before existing start date",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      userID,
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			reqRawSubID: "1",
+			reqUpdateSubReq: &UpdateSubRequest{
+				EndDate: &[]domain.Date{newDate(time.Date(2000, 0, 0, 0, 0, 0, 0, time.UTC))}[0],
+			},
+			wantErr:     true,
+			wantErrCode: "new end date before existing start date",
+		},
 	}
 
-	_, err := DB().ExecContext(t.Context(), `
-		INSERT INTO subs (
-			service_name,
-			price,
-			user_id,
-			start_date
-		) VALUES ($1, $2, $3, $4)	 
-	`, req.ServiceName, req.Price, req.UserID, req.StartDate)
-	require.NoError(t, err)
+	for _, test := range tests {
+		testContainers.Reset(t, ctx)
+		t.Run(test.name, func(t *testing.T) {
+			if test.prepare != nil {
+				test.prepare()
+			}
 
-	newEndDate := newDate(time.Now())
-	updatedSub, err := service.Update(ctx, "1", &UpdateSubRequest{
-		ServiceName: new("KION"),
-		EndDate:     &newEndDate,
-	})
-	require.NoError(t, err)
+			got, err := service.Update(ctx, test.reqRawSubID, test.reqUpdateSubReq)
 
-	require.Equal(t, updatedSub.ID, int64(1))
-	require.Equal(t, updatedSub.ServiceName, "KION")
-	require.Equal(t, updatedSub.UserID, req.UserID)
-	require.Equal(t, updatedSub.Price, req.Price)
-	require.Equal(t, updatedSub.StartDate, req.StartDate)
-	require.Equal(t, updatedSub.EndDate, &newEndDate)
-}
+			if test.wantErr {
+				require.Error(t, err)
+				require.Nil(t, got)
+				if test.wantErrCode != "" {
+					require.Contains(t, err.Error(), test.wantErrCode)
+				}
+				return
+			}
 
-func TestSubService_Update_NotFound(t *testing.T) {
-	ctx := context.Background()
-	testContainers.Reset(t, ctx)
-
-	repo := repository.NewSubsRepo(ctx, DB())
-	logger := slog.Default()
-	service := NewSub(repo, logger)
-
-	_, err := service.Update(ctx, "1", &UpdateSubRequest{
-		ServiceName: new("KION"),
-	})
-	require.Error(t, err)
+			require.NoError(t, err)
+			if test.validate != nil {
+				test.validate(got)
+			}
+		})
+	}
 }
 
 func TestSubService_Delete(t *testing.T) {
 	ctx := context.Background()
-	testContainers.Reset(t, ctx)
 
 	repo := repository.NewSubsRepo(ctx, DB())
 	logger := slog.Default()
 	service := NewSub(repo, logger)
 
-	userID := uuid.New()
-	startDate := newDate(time.Now())
-	req := &CreateSubRequest{
-		ServiceName: "YANDEX",
-		Price:       400,
-		UserID:      userID,
-		StartDate:   startDate,
+	tests := []struct {
+		name        string
+		prepare     func()
+		reqRawSubID string
+		wantErr     bool
+		wantErrCode string
+		validate    func()
+	}{
+		{
+			name: "Success. Deleted",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   newDate(time.Now()),
+					EndDate:     &[]domain.Date{newDate(time.Now())}[0],
+				})
+			},
+			reqRawSubID: "1",
+			validate: func() {
+				require.Equal(t, 0, countSubs(t))
+			},
+		},
+		{
+			name:        "Error. Invalid subID",
+			reqRawSubID: "-",
+			wantErr:     true,
+			wantErrCode: "invalid sub id",
+		},
+		{
+			name:        "Error. Not found",
+			reqRawSubID: "1",
+			wantErr:     true,
+			wantErrCode: "sub not found",
+		},
 	}
 
-	_, err := DB().ExecContext(t.Context(), `
-		INSERT INTO subs (
-			service_name,
-			price,
-			user_id,
-			start_date
-		) VALUES ($1, $2, $3, $4)	 
-	`, req.ServiceName, req.Price, req.UserID, req.StartDate)
-	require.NoError(t, err)
+	for _, test := range tests {
+		testContainers.Reset(t, ctx)
+		t.Run(test.name, func(t *testing.T) {
+			if test.prepare != nil {
+				test.prepare()
+			}
 
-	require.NoError(t, service.Delete(ctx, "1"))
+			err := service.Delete(ctx, test.reqRawSubID)
 
-	var count int
-	require.NoError(t, DB().GetContext(ctx, &count, `SELECT COUNT(*) FROM subs`))
-	require.Equal(t, count, 0)
-}
+			if test.wantErr {
+				require.Error(t, err)
+				if test.wantErrCode != "" {
+					require.Contains(t, err.Error(), test.wantErrCode)
+				}
+				return
+			}
 
-func TestSubService_Delete_NotFound(t *testing.T) {
-	ctx := context.Background()
-	testContainers.Reset(t, ctx)
-
-	repo := repository.NewSubsRepo(ctx, DB())
-	logger := slog.Default()
-	service := NewSub(repo, logger)
-
-	err := service.Delete(ctx, "1")
-	repoErr, ok := errors.AsType[*domain.AppError](err)
-	require.True(t, ok)
-	require.Equal(t, repoErr.Code, domain.ErrNotFound().Code)
+			require.NoError(t, err)
+			if test.validate != nil {
+				test.validate()
+			}
+		})
+	}
 }
 
 func TestSubService_List(t *testing.T) {
@@ -360,45 +606,168 @@ func TestSubService_List(t *testing.T) {
 	logger := slog.Default()
 	service := NewSub(repo, logger)
 
-	req1 := &CreateSubRequest{
-		ServiceName: "Kinosearch",
-		Price:       400,
-		UserID:      uuid.New(),
-		StartDate:   newDate(time.Now()),
+	startDate := newDate(time.Now())
+	endDate := startDate.AddMonths(1)
+
+	tests := []struct {
+		name        string
+		prepare     func()
+		rawLimit    string
+		rawPage     string
+		wantErr     bool
+		wantErrCode string
+		validate    func(got *ListResponse)
+	}{
+		{
+			name: "Success. Listed 1",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			rawLimit: "5",
+			rawPage:  "1",
+			validate: func(got *ListResponse) {
+				require.Equal(t, 3, got.TotalCount)
+				require.Equal(t, 3, got.PageSize)
+				require.Equal(t, 1, got.PageNumber)
+
+				require.Len(t, got.Content, 3)
+			},
+		},
+		{
+			name: "Success. Listed 2",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			rawLimit: "2",
+			rawPage:  "2",
+			validate: func(got *ListResponse) {
+				require.Equal(t, 3, got.TotalCount)
+				require.Equal(t, 1, got.PageSize)
+				require.Equal(t, 2, got.PageNumber)
+
+				require.Len(t, got.Content, 1)
+				require.Equal(t, int64(3), got.Content[0].ID)
+			},
+		},
+		{
+			name: "Success. Listed 3",
+			prepare: func() {
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+
+				createSub(t, &CreateSubRequest{
+					ServiceName: "yandex",
+					Price:       400,
+					UserID:      uuid.New(),
+					StartDate:   startDate,
+					EndDate:     &endDate,
+				})
+			},
+			validate: func(got *ListResponse) {
+				require.Equal(t, 3, got.TotalCount)
+				require.Equal(t, 1, got.PageSize)
+				require.Equal(t, 1, got.PageNumber)
+
+				require.Len(t, got.Content, 1)
+				require.Equal(t, int64(1), got.Content[0].ID)
+			},
+		},
+		{
+			name: "Success. Listed 3",
+			validate: func(got *ListResponse) {
+				require.Equal(t, 0, got.TotalCount)
+				require.Equal(t, 0, got.PageSize)
+				require.Equal(t, 1, got.PageNumber)
+
+				require.NotNil(t, got.Content)
+			},
+		},
 	}
-	createSub(t, req1)
 
-	req2 := &CreateSubRequest{
-		ServiceName: "Yandex",
-		Price:       500,
-		UserID:      uuid.New(),
-		StartDate:   newDate(time.Now()),
+	for _, test := range tests {
+		testContainers.Reset(t, ctx)
+		t.Run(test.name, func(t *testing.T) {
+			if test.prepare != nil {
+				test.prepare()
+			}
+
+			got, err := service.List(ctx, test.rawLimit, test.rawPage)
+
+			if test.wantErr {
+				require.Error(t, err)
+				require.NotNil(t, got)
+				if test.wantErrCode != "" {
+					require.Contains(t, err.Error(), test.wantErrCode)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			if test.validate != nil {
+				test.validate(got)
+			}
+		})
 	}
-	createSub(t, req2)
-
-	resp1, err := service.List(ctx, "1", "1")
-	require.NoError(t, err)
-	require.Equal(t, 1, len(resp1.Content))
-	require.Equal(t, 1, resp1.PageNumber)
-	require.Equal(t, 1, resp1.PageSize)
-	require.Equal(t, 2, resp1.TotalCount)
-
-	resp2, err := service.List(ctx, "2", "1")
-	require.NoError(t, err)
-	require.Equal(t, 2, len(resp2.Content))
-	require.Equal(t, 1, resp2.PageNumber)
-	require.Equal(t, 2, resp2.PageSize)
-	require.Equal(t, 2, resp2.TotalCount)
-
-	resp3, err := service.List(ctx, "", "")
-	require.NoError(t, err)
-	require.Equal(t, 1, len(resp3.Content))
-	require.Equal(t, 1, resp3.PageNumber)
-	require.Equal(t, 1, resp3.PageSize)
-	require.Equal(t, 2, resp3.TotalCount)
 }
 
-func TestSubService_TotalAmount(t *testing.T) {
+func TestSubService_TotalAmountV2(t *testing.T) {
 	ctx := context.Background()
 	testContainers.Reset(t, ctx)
 
@@ -406,68 +775,146 @@ func TestSubService_TotalAmount(t *testing.T) {
 	logger := slog.Default()
 	service := NewSub(repo, logger)
 
+	userID := uuid.New()
+
+	allSubs := []CreateSubRequest{}
 	req1 := &CreateSubRequest{
-		ServiceName: "Kinosearch",
-		Price:       500,
-		UserID:      uuid.New(),
-		StartDate:   newDate(time.Now()),
+		ServiceName: "yandex",
+		Price:       400,
+		UserID:      userID,
+		StartDate:   newDate(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)),
+		EndDate:     new(newDate(time.Date(2000, 5, 1, 0, 0, 0, 0, time.UTC))),
 	}
 	createSub(t, req1)
+	allSubs = append(allSubs, *req1)
 
 	req2 := &CreateSubRequest{
-		ServiceName: "Yandex",
-		Price:       750,
-		UserID:      req1.UserID,
-		StartDate:   newDate(time.Now().Add(time.Hour * 24 * 7)),
+		ServiceName: "kion",
+		Price:       800,
+		UserID:      userID,
+		StartDate:   newDate(time.Date(2000, 3, 1, 0, 0, 0, 0, time.UTC)),
+		EndDate:     new(newDate(time.Date(2000, 4, 1, 0, 0, 0, 0, time.UTC))),
 	}
 	createSub(t, req2)
+	allSubs = append(allSubs, *req2)
 
 	req3 := &CreateSubRequest{
-		ServiceName: "Yandex",
-		Price:       320,
-		UserID:      req1.UserID,
-		StartDate:   newDate(time.Now()),
+		ServiceName: "kion",
+		Price:       800,
+		UserID:      uuid.New(),
+		StartDate:   newDate(time.Date(2000, 3, 1, 0, 0, 0, 0, time.UTC)),
+		EndDate:     new(newDate(time.Date(2000, 8, 1, 0, 0, 0, 0, time.UTC))),
 	}
 	createSub(t, req3)
+	allSubs = append(allSubs, *req3)
 
 	req4 := &CreateSubRequest{
-		ServiceName: "Youtube",
-		Price:       315,
+		ServiceName: "kinopoisk",
+		Price:       700,
 		UserID:      uuid.New(),
-		StartDate:   newDate(time.Now()),
+		StartDate:   newDate(time.Date(2000, 5, 1, 0, 0, 0, 0, time.UTC)),
+		EndDate:     new(newDate(time.Date(2001, 5, 1, 0, 0, 0, 0, time.UTC))),
 	}
 	createSub(t, req4)
+	allSubs = append(allSubs, *req4)
 
-	resp1, err := service.TotalAmount(ctx, &TotalAmountRequest{
-		RawUserID: req1.UserID.String(),
-	})
-	require.NoError(t, err)
-	require.Equal(t, req1.Price+req2.Price+req3.Price, resp1.Sum)
+	req5 := &CreateSubRequest{
+		ServiceName: "netflix",
+		Price:       700,
+		UserID:      uuid.New(),
+		StartDate:   newDate(time.Date(2000, 8, 1, 0, 0, 0, 0, time.UTC)),
+		EndDate:     new(newDate(time.Date(2000, 10, 2, 0, 0, 0, 0, time.UTC))),
+	}
+	createSub(t, req5)
+	allSubs = append(allSubs, *req5)
 
-	resp2, err := service.TotalAmount(ctx, &TotalAmountRequest{
-		RawUserID:  req1.UserID.String(),
-		RawSubname: "Yandex",
-	})
-	require.NoError(t, err)
-	require.Equal(t, req2.Price+req3.Price, resp2.Sum)
+	tests := []struct {
+		name        string
+		req         *TotalAmountRequest
+		wantErr     bool
+		wantErrCode string
+		expectedSum int
+	}{
+		{
+			name: "Success. With Only Service Name Filter",
+			req: &TotalAmountRequest{
+				RawSubname: "kion",
+			},
+			expectedSum: 4800,
+		},
+		{
+			name: "Success. With Only UserID Filter",
+			req: &TotalAmountRequest{
+				RawUserID: userID.String(),
+			},
+			expectedSum: 2400,
+		},
+		{
+			name: "Success. With Only From Filter",
+			req: &TotalAmountRequest{
+				RawFrom: "2000-03-01",
+			},
+			expectedSum: 16100,
+		},
+		{
+			name: "Success. With Only To Filter",
+			req: &TotalAmountRequest{
+				RawTo: "2000-10-02",
+			},
+			expectedSum: 12700,
+		},
+		{
+			name: "Success. With Both Date Filters",
+			req: &TotalAmountRequest{
+				RawFrom: "2000-05-05",
+				RawTo:   "2000-08-09",
+			},
+			expectedSum: 4400,
+		},
+		{
+			name: "Success. Multi Filters 1",
+			req: &TotalAmountRequest{
+				RawUserID:  userID.String(),
+				RawSubname: "kion",
+			},
+			expectedSum: 800,
+		},
+		{
+			name: "Success. Multi Filters 2",
+			req: &TotalAmountRequest{
+				RawUserID: uuid.NewString(),
+				RawTo:     "1999-12-31",
+			},
+			expectedSum: 0,
+		},
+		{
+			name: "Success. Multi Filters 3",
+			req: &TotalAmountRequest{
+				RawSubname: "kion",
+				RawFrom:    "2000-04-01",
+			},
+			expectedSum: 3200,
+		},
+	}
 
-	resp3, err := service.TotalAmount(ctx, &TotalAmountRequest{
-		RawUserID:  req1.UserID.String(),
-		RawSubname: "Yandex",
-		RawFrom:    "2026-03-09",
-	})
-	require.NoError(t, err)
-	require.Equal(t, req2.Price, resp3.Sum)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 
-	resp4, err := service.TotalAmount(ctx, &TotalAmountRequest{
-		RawSubname: "Yandex",
-	})
-	require.NoError(t, err)
-	require.Equal(t, req2.Price+req3.Price, resp4.Sum)
+			got, err := service.TotalAmount(ctx, test.req)
 
-	resp5, err := service.TotalAmount(ctx, &TotalAmountRequest{})
-	require.NoError(t, err)
-	require.Equal(t, req1.Price+req2.Price+req3.Price+req4.Price, resp5.Sum)
+			if test.wantErr {
+				require.Error(t, err)
+				require.NotNil(t, got)
+				if test.wantErrCode != "" {
+					require.Contains(t, err.Error(), test.wantErrCode)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, test.expectedSum, got.Sum)
+		})
+	}
 }
 
 func createSub(t *testing.T, req *CreateSubRequest) {
@@ -481,6 +928,12 @@ func createSub(t *testing.T, req *CreateSubRequest) {
 			start_date,
 			end_date
 		) VALUES ($1, $2, $3, $4, $5)
-	`, req.ServiceName, req.Price, req.UserID, req.StartDate, req.EndData)
+	`, req.ServiceName, req.Price, req.UserID, req.StartDate, req.EndDate)
 	require.NoError(t, err)
+}
+
+func countSubs(t *testing.T) int {
+	var count int
+	require.NoError(t, DB().GetContext(t.Context(), &count, `SELECT COUNT(*) FROM subs`))
+	return count
 }

@@ -49,3 +49,11 @@ func ErrAlreadyExist() *AppError {
 		Status:  409,
 	}
 }
+
+func ErrTooManyRequests() *AppError {
+	return &AppError{
+		Code:    "TOO_MANY_REQUESTS",
+		Message: "Too many request, wait a minute",
+		Status:  429,
+	}
+}

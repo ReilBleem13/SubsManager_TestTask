@@ -5,6 +5,14 @@ import (
 	"github.com/google/uuid"
 )
 
+type SubCreate struct {
+	ServiceName string      `db:"service_name"`
+	Price       int         `db:"price"`
+	UserID      uuid.UUID   `db:"user_id"`
+	StartDate   domain.Date `db:"start_date"`
+	EndDate     domain.Date `db:"end_date"`
+}
+
 type SubUpdate struct {
 	ID          int64        `db:"id"`
 	ServiceName *string      `db:"service_name"`

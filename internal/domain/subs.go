@@ -12,6 +12,15 @@ import (
 
 type Date time.Time
 
+func (d Date) AddMonths(n int) Date {
+	t := time.Time(d).AddDate(0, n, 0)
+	return Date(t)
+}
+
+func (d Date) Before(other Date) bool {
+	return time.Time(d).Before(time.Time(other))
+}
+
 func (d *Date) UnmarshalJSON(b []byte) error {
 	s := strings.Trim(string(b), `"`)
 	t, err := time.Parse("2006-01-02", s)
@@ -48,5 +57,7 @@ type Sub struct {
 	Price       int       `json:"price" db:"price"`
 	UserID      uuid.UUID `json:"user_id" db:"user_id"`
 	StartDate   Date      `json:"start_date" db:"start_date"`
-	EndDate     *Date     `json:"end_date,omitempty" db:"end_date"`
+	EndDate     Date      `json:"end_date" db:"end_date"`
+	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
